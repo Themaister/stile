@@ -43,11 +43,63 @@ namespace stile
       }
    }
 
+   void Image::generate_palette(const uint16_t *buf, unsigned width, unsigned height)
+   {
+      unsigned elems = width * height;
+      for (unsigned i = 0; i < elems; i++)
+      {
+         std::map<uint16_t, unsigned>::const_iterator itr = palette.find(buf[i]);
+         if (itr == palette.end())
+         {
+            palette[buf[i]] = palette.size();
+         }
+      }
+
+      if (palette.size() > 16)
+         fprintf(stderr, "Palette is bigger than 16 colors! %u\n", (unsigned)palette.size());
+
+      for (std::map<uint16_t, unsigned>::const_iterator itr = palette.begin();
+            itr != palette.end(); ++itr)
+         printf("Color %u = 0x%04x\n", itr->second, (unsigned)itr->first);
+   }
+
+   void Image::convert_16bpp_to_4bpp(uint8_t *bitplane, const uint16_t *buf, unsigned linesize)
+   {
+      std::fill(bitplane, bitplane + 32, 0);
+      for (unsigned y = 0; y < 8; y++)
+      {
+         uint8_t palette_indexes[8];
+         for (unsigned x = 0; x < 8; x++)
+         {
+            unsigned shift_amt = 7 - x;
+            palette_indexes[x] = palette[buf[8 * y + x]];
+            bitplane[2 * x] |= (palette_indexes[x] & 0x1) << shift_amt;
+            bitplane[2 * x + 1] |= (palette_indexes[x] & 0x2) << (shift_amt - 1);
+            bitplane[2 * x + 16] |= (palette_indexes[x] & 0x4) << (shift_amt - 2);
+            bitplane[2 * x + 17] |= (palette_indexes[x] & 0x8) << (shift_amt - 3);
+         }
+      }
+   }
+
+   void Image::convert_to_bitplane(uint8_t *bitplane, const uint16_t *buf, unsigned width, unsigned height)
+   {
+      unsigned tiles_x = width / 8;
+      unsigned tiles_y = height / 8;
+      for (unsigned y = 0; y < tiles_y; y++)
+      {
+         for (unsigned x = 0; x < tiles_x; x++)
+         {
+            convert_16bpp_to_4bpp(
+                  bitplane + 32 * (y * tiles_x + x), 
+                  buf + y * 8 * width + x * 8,
+                  width);
+         }
+      }
+   }
+
+   // For lulz ;)
    void Image::ARGB_to_XBGR_SSE2(uint16_t *xbgr, const uint32_t *argb, unsigned width, unsigned height)
    {
-      if (((width * height) % 8) != 0)
-         throw std::runtime_error("Image does not have aligned size.");
-
       unsigned sse_elems = width * height / 4;
 
       // Mask.
@@ -56,33 +108,51 @@ namespace stile
       __m128i final_mask = _mm_set1_epi32(0x7FFF0000);
 
       // Convert 8 pixels on the go. :)
-      for (unsigned i = 0; i < sse_elems; i += 2)
+      for (unsigned i = 0; i < sse_elems; i += 4)
       {
-         // Convert first 4 pixels.
-         __m128i val = _mm_load_si128((const __m128i*)argb + i);
+         __m128i val[4];
+         __m128i g[4];
+         __m128i final_res[4];
+         __m128i res[2];
+
+         val[0] = _mm_load_si128((const __m128i*)argb + i + 0);
+         val[1] = _mm_load_si128((const __m128i*)argb + i + 1);
+         val[2] = _mm_load_si128((const __m128i*)argb + i + 2);
+         val[3] = _mm_load_si128((const __m128i*)argb + i + 3);
 
          // Mask to get 5 bits from each channel.
-         val = _mm_and_si128(val, mask);
+         val[0] = _mm_and_si128(val[0], mask);
+         val[1] = _mm_and_si128(val[1], mask);
+         val[2] = _mm_and_si128(val[2], mask);
+         val[3] = _mm_and_si128(val[3], mask);
 
          // Move R and B channel where it belongs.
-         val = _mm_srli_epi32(val, 3);
-         val = _mm_or_si128(val, _mm_slli_epi32(val, 26));
+         val[0] = _mm_srli_epi32(val[0], 3);
+         val[1] = _mm_srli_epi32(val[1], 3);
+         val[2] = _mm_srli_epi32(val[2], 3);
+         val[3] = _mm_srli_epi32(val[3], 3);
+
+         val[0] = _mm_or_si128(val[0], _mm_slli_epi32(val[0], 26));
+         val[1] = _mm_or_si128(val[1], _mm_slli_epi32(val[1], 26));
+         val[2] = _mm_or_si128(val[2], _mm_slli_epi32(val[2], 26));
+         val[3] = _mm_or_si128(val[3], _mm_slli_epi32(val[3], 26));
 
          // Masks to remove the B and R.
-         __m128i g = _mm_and_si128(val, g_mask);
+         g[0] = _mm_and_si128(val[0], g_mask);
+         g[1] = _mm_and_si128(val[1], g_mask);
+         g[2] = _mm_and_si128(val[2], g_mask);
+         g[3] = _mm_and_si128(val[3], g_mask);
 
          // Shift G channel in place.
-         val = _mm_or_si128(val, _mm_slli_epi32(g, 13));
-         val = _mm_and_si128(val, final_mask);
+         val[0] = _mm_or_si128(val[0], _mm_slli_epi32(g[0], 13));
+         val[1] = _mm_or_si128(val[1], _mm_slli_epi32(g[1], 13));
+         val[2] = _mm_or_si128(val[2], _mm_slli_epi32(g[2], 13));
+         val[3] = _mm_or_si128(val[3], _mm_slli_epi32(g[3], 13));
 
-         // Convert last 4 pixels.
-         __m128i val2 = _mm_load_si128((const __m128i*)argb + i + 1);
-         val2 = _mm_and_si128(val2, mask);
-         val2 = _mm_srli_epi32(val2, 3);
-         val2 = _mm_or_si128(val2, _mm_slli_epi32(val2, 26));
-         g = _mm_and_si128(val2, g_mask);
-         val2 = _mm_or_si128(val2, _mm_slli_epi32(g, 13));
-         val2 = _mm_and_si128(val2, final_mask);
+         val[0] = _mm_and_si128(val[0], final_mask);
+         val[1] = _mm_and_si128(val[1], final_mask);
+         val[2] = _mm_and_si128(val[2], final_mask);
+         val[3] = _mm_and_si128(val[3], final_mask);
 
          // Stuff is now interleaved in memory. Shuffle it back into place.
          // val =  [c3, 0, c2, 0, c1, 0, c0, 0];
@@ -103,15 +173,22 @@ namespace stile
          // res = [c7, c6, c5, c4, c3, c2, c1, c0];
          //
          // And write back, the writeback still follows a "little-endian" order, so c0 through c7 is written.
-         __m128i final_res[2];
-         final_res[0] = _mm_shufflehi_epi16(val, _MM_SHUFFLE(3, 1, 0, 0));
+         final_res[0] = _mm_shufflehi_epi16(val[0], _MM_SHUFFLE(3, 1, 0, 0));
+         final_res[1] = _mm_shufflehi_epi16(val[1], _MM_SHUFFLE(0, 0, 3, 1));
+         final_res[2] = _mm_shufflehi_epi16(val[2], _MM_SHUFFLE(3, 1, 0, 0));
+         final_res[3] = _mm_shufflehi_epi16(val[3], _MM_SHUFFLE(0, 0, 3, 1));
          final_res[0] = _mm_shufflelo_epi16(final_res[0], _MM_SHUFFLE(3, 1, 0, 0));
-         final_res[1] = _mm_shufflehi_epi16(val2, _MM_SHUFFLE(0, 0, 3, 1));
          final_res[1] = _mm_shufflelo_epi16(final_res[1], _MM_SHUFFLE(0, 0, 3, 1));
-         __m128i res = _mm_or_si128(final_res[0], final_res[1]);
-         res = _mm_shuffle_epi32(res, _MM_SHUFFLE(2, 0, 3, 1));
+         final_res[2] = _mm_shufflelo_epi16(final_res[2], _MM_SHUFFLE(3, 1, 0, 0));
+         final_res[3] = _mm_shufflelo_epi16(final_res[3], _MM_SHUFFLE(0, 0, 3, 1));
 
-         _mm_store_si128((__m128i*)xbgr + (i >> 1), res);
+         res[0] = _mm_or_si128(final_res[0], final_res[1]);
+         res[1] = _mm_or_si128(final_res[2], final_res[3]);
+         res[0] = _mm_shuffle_epi32(res[0], _MM_SHUFFLE(2, 0, 3, 1));
+         res[1] = _mm_shuffle_epi32(res[1], _MM_SHUFFLE(2, 0, 3, 1));
+
+         _mm_store_si128((__m128i*)xbgr + (i >> 1), res[0]);
+         _mm_store_si128((__m128i*)xbgr + (i >> 1) + 1, res[1]);
       }
    }
 
@@ -143,12 +220,10 @@ namespace stile
          printf("Input pixel  %5u: 0x%08x\n", i, (unsigned)picture_buf[i]);
          printf("Output Pixel %5u: 0x%04x\n", i, (unsigned)m_buf[i]);
       }
-   }
 
-   void Image::generate_palette()
-   {
+      generate_palette(width, height);
+      convert_to_bitplane(&m_bitbuf[0], &m_buf[0], width, height);
    }
-
 }
 
 
