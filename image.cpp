@@ -43,19 +43,8 @@ namespace stile
       }
    }
 
-   static void test_vector()
-   {
-      __m128i test = _mm_set_epi32(3, 2, 1, 0);
-      __m128i test_shuf = _mm_shufflehi_epi16(test, _MM_SHUFFLE(0, 1, 2, 3));
-      print_vector_u32(test);
-      print_vector_u32(test_shuf);
-   }
-
-
    void Image::ARGB_to_XBGR_SSE2(uint16_t *xbgr, const uint32_t *argb, unsigned width, unsigned height)
    {
-      test_vector();
-
       if (((width * height) % 8) != 0)
          throw std::runtime_error("Image does not have aligned size.");
 
@@ -71,6 +60,7 @@ namespace stile
       {
          // Convert first 4 pixels.
          __m128i val = _mm_load_si128((const __m128i*)argb + i);
+
          // Mask to get 5 bits from each channel.
          val = _mm_and_si128(val, mask);
 
@@ -94,7 +84,25 @@ namespace stile
          val2 = _mm_or_si128(val2, _mm_slli_epi32(g, 13));
          val2 = _mm_and_si128(val2, final_mask);
 
-         // Interleave in a 0-4-1-5-2-6-3-7 pattern. Time to shuffle it into place!
+         // Stuff is now interleaved in memory. Shuffle it back into place.
+         // val =  [c3, 0, c2, 0, c1, 0, c0, 0];
+         // val2 = [c7, 0, c6, 0, c5, 0, c4, 0];
+         //
+         // After hi-shuffle:
+         // val = [c3, c2, 0, 0, c1, 0, c0, 0];
+         // Lo-shuffle:
+         // val = [c3, c2, 0, 0, c1, c0, 0, 0];
+         //
+         // Hi-shuffle and lo-shuffle on val2:
+         // val2 = [0, 0, c7, c6, 0, 0, c5, c4];
+         //
+         // OR these together:
+         // res = [c3, c2, c7, c6, c1, c0, c5, c4];
+         //
+         // Do final shuffle:
+         // res = [c7, c6, c5, c4, c3, c2, c1, c0];
+         //
+         // And write back, the writeback still follows a "little-endian" order, so c0 through c7 is written.
          __m128i final_res[2];
          final_res[0] = _mm_shufflehi_epi16(val, _MM_SHUFFLE(3, 1, 0, 0));
          final_res[0] = _mm_shufflelo_epi16(final_res[0], _MM_SHUFFLE(3, 1, 0, 0));
@@ -102,9 +110,6 @@ namespace stile
          final_res[1] = _mm_shufflelo_epi16(final_res[1], _MM_SHUFFLE(0, 0, 3, 1));
          __m128i res = _mm_or_si128(final_res[0], final_res[1]);
          res = _mm_shuffle_epi32(res, _MM_SHUFFLE(2, 0, 3, 1));
-
-         puts("RESULT");
-         print_vector_u32(res);
 
          _mm_store_si128((__m128i*)xbgr + (i >> 1), res);
       }
