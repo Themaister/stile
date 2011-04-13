@@ -3,12 +3,14 @@
 #include <algorithm>
 #include <stdexcept>
 #include <Imlib2.h>
+#include <string.h>
 
 #include <emmintrin.h>
 #include <stdio.h>
 
 namespace stile
 {
+#if 0
    static void print_vector_u32(__m128i reg)
    {
       union
@@ -42,7 +44,9 @@ namespace stile
          printf("\tElem %u: 0x%04x\n", i, (unsigned)u.elem[i]);
       }
    }
+#endif
 
+   // Is this even possible with SSE? :(
    void Image::generate_palette(const uint16_t *buf, unsigned width, unsigned height)
    {
       unsigned elems = width * height;
@@ -53,15 +57,13 @@ namespace stile
          {
             unsigned palette_size = palette.size();
             palette[buf[i]] = palette_size;
+            palette_array[palette_size & 0xf] = buf[i];
          }
       }
 
       if (palette.size() > 16)
-         fprintf(stderr, "Palette is bigger than 16 colors! %u\n", (unsigned)palette.size());
+         throw std::runtime_error("Palette is bigger than 16 colors!");
 
-      for (std::map<uint16_t, unsigned>::const_iterator itr = palette.begin();
-            itr != palette.end(); ++itr)
-         printf("Color %u = 0x%04x\n", itr->second, (unsigned)itr->first);
    }
 
    void Image::convert_16bpp_to_4bpp(uint8_t *bitplane, const uint16_t *buf, unsigned linesize)
@@ -87,8 +89,6 @@ namespace stile
       unsigned tiles_x = width / 8;
       unsigned tiles_y = height / 8;
 
-      printf("Number of tiles: %u x %u\n", tiles_x, tiles_y);
-
       for (unsigned y = 0; y < tiles_y; y++)
       {
          for (unsigned x = 0; x < tiles_x; x++)
@@ -98,12 +98,6 @@ namespace stile
                   buf + y * 8 * width + x * 8,
                   width);
          }
-      }
-
-      puts("Bitplane:");
-      for (unsigned i = 0; i < width * height / 2; i++)
-      {
-         printf("\tByte %u: 0x%02x\n", i, (unsigned)bitplane[i]);
       }
    }
 
@@ -202,9 +196,67 @@ namespace stile
       }
    }
 
+   // Super trivial hash pulled out of my ass, but hey. It's not crypto after all ;)
+   void Image::generate_tilemap(const uint8_t *buf, unsigned tiles)
+   {
+      const uint8_t *orig_buf = buf;
+
+      unsigned tile_index = 0;
+      for (unsigned j = 0; j < tiles; j++)
+      {
+         uint32_t hash = 0;
+         for (unsigned i = 0; i < 32; i++)
+         {
+            hash += ~buf[i];
+            hash ^= buf[i] << 2;
+         }
+
+         if (tile_hash[hash].empty()) // Yay, a brand new tile.
+         {
+            fprintf(stderr, ":: Found new tile!\n");
+            m_tilemap[j] = tile_index++;
+            tile_hash[hash].push_back(std::pair<unsigned, unsigned>(j, m_tilemap[j]));
+
+            // Add the new tile to our tileset.
+            m_tiles.insert(m_tiles.end(), buf, buf + 32);
+         }
+         else // Hmm... Hopefully we can find a tile that was already used.
+         {
+            int tilenum = -1;
+            for (std::list<std::pair<unsigned, unsigned> >::const_iterator itr = tile_hash[hash].begin();
+                  itr != tile_hash[hash].end(); ++itr)
+            {
+               if (memcmp(buf, &orig_buf[itr->first * 32], 32) == 0) // Yay :)
+               {
+                  tilenum = itr->second;
+                  break;
+               }
+            }
+
+            // We found an old tile, use it! :D
+            if (tilenum >= 0)
+            {
+               m_tilemap[j] = tilenum;
+            }
+            else // Oh snap... Chain our hash table even more :(
+            {
+               m_tilemap[j] = tile_index++;
+               tile_hash[hash].push_back(std::pair<unsigned, unsigned>(j, m_tilemap[j]));
+
+               fprintf(stderr, ":: Found new tile!\n");
+               m_tiles.insert(m_tiles.end(), buf, buf + 32);
+            }
+         }
+
+         buf += 32;
+      }
+   }
+
 
    Image::Image(const char *path, unsigned palette_size)
    {
+      std::fill(palette_array, palette_array + 16, 0);
+
       Imlib_Image img;
 
       img = imlib_load_image(path);
@@ -219,6 +271,7 @@ namespace stile
       picture_buf.reserve(width * height);
       m_buf.reserve(width * height);
       m_bitbuf.reserve(width * height / 2);
+      m_tilemap.reserve(width * height / (8 * 8));
 
       const uint32_t *data = imlib_image_get_data_for_reading_only();
       std::copy(data, data + width * height, picture_buf.begin());
@@ -226,14 +279,35 @@ namespace stile
 
       ARGB_to_XBGR_SSE2(&m_buf[0], &picture_buf[0], width, height);
 
-      for (unsigned i = 0; i < width * height; i++)
-      {
-         printf("Input pixel  %5u: 0x%08x\n", i, (unsigned)picture_buf[i]);
-         printf("Output Pixel %5u: 0x%04x\n", i, (unsigned)m_buf[i]);
-      }
-
       generate_palette(&m_buf[0], width, height);
       convert_to_bitplane(&m_bitbuf[0], &m_buf[0], width, height);
+
+      tiles_x = width / 8;
+      tiles_y = height / 8;
+      generate_tilemap(&m_bitbuf[0], tiles_x * tiles_y);
+
+      puts("BG stats:");
+      printf("\tSize: %u x %u\n", width, height);
+      printf("\tDifferent tiles: %u\n", (unsigned)m_tiles.size() / 32);
+      printf("\tColors: %u\n", (unsigned)palette.size());
+   }
+
+   const uint16_t* Image::get_palette(size_t& size) const
+   {
+      size = 16;
+      return palette_array;
+   }
+
+   const uint16_t* Image::get_tilemap(size_t& size) const
+   {
+      size = tiles_x * tiles_y;
+      return &m_tilemap[0];
+   }
+
+   const uint8_t* Image::get_tiles(size_t& size) const
+   {
+      size = m_tiles.size();
+      return &m_tiles[0];
    }
 }
 
