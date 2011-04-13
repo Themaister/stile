@@ -25,8 +25,8 @@ namespace stile
                unsigned tile_size,
                unsigned width, unsigned height);
 
-         static void generate_palette(const uint16_t *buf, unsigned width, unsigned height);
-         static void convert_to_bitplane(uint8_t *bitplane, const uint16_t *buf, unsigned width,
+         void generate_palette(const uint16_t *buf, unsigned width, unsigned height);
+         void convert_to_bitplane(uint8_t *bitplane, const uint16_t *buf, unsigned width,
                unsigned height);
          void convert_16bpp_to_4bpp(uint8_t *bitplane, const uint16_t *buf, unsigned linesize);
 

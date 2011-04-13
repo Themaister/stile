@@ -51,7 +51,8 @@ namespace stile
          std::map<uint16_t, unsigned>::const_iterator itr = palette.find(buf[i]);
          if (itr == palette.end())
          {
-            palette[buf[i]] = palette.size();
+            unsigned palette_size = palette.size();
+            palette[buf[i]] = palette_size;
          }
       }
 
@@ -68,15 +69,15 @@ namespace stile
       std::fill(bitplane, bitplane + 32, 0);
       for (unsigned y = 0; y < 8; y++)
       {
-         uint8_t palette_indexes[8];
+         unsigned index = 2 * y;
          for (unsigned x = 0; x < 8; x++)
          {
             unsigned shift_amt = 7 - x;
-            palette_indexes[x] = palette[buf[8 * y + x]];
-            bitplane[2 * x] |= (palette_indexes[x] & 0x1) << shift_amt;
-            bitplane[2 * x + 1] |= (palette_indexes[x] & 0x2) << (shift_amt - 1);
-            bitplane[2 * x + 16] |= (palette_indexes[x] & 0x4) << (shift_amt - 2);
-            bitplane[2 * x + 17] |= (palette_indexes[x] & 0x8) << (shift_amt - 3);
+            uint16_t color = palette[buf[y * linesize + x]];
+            bitplane[index +  0] |= ((color & 0x1) >> 0) << shift_amt;
+            bitplane[index +  1] |= ((color & 0x2) >> 1) << shift_amt;
+            bitplane[index + 16] |= ((color & 0x4) >> 2) << shift_amt;
+            bitplane[index + 17] |= ((color & 0x8) >> 3) << shift_amt;
          }
       }
    }
@@ -85,6 +86,9 @@ namespace stile
    {
       unsigned tiles_x = width / 8;
       unsigned tiles_y = height / 8;
+
+      printf("Number of tiles: %u x %u\n", tiles_x, tiles_y);
+
       for (unsigned y = 0; y < tiles_y; y++)
       {
          for (unsigned x = 0; x < tiles_x; x++)
@@ -94,6 +98,12 @@ namespace stile
                   buf + y * 8 * width + x * 8,
                   width);
          }
+      }
+
+      puts("Bitplane:");
+      for (unsigned i = 0; i < width * height / 2; i++)
+      {
+         printf("\tByte %u: 0x%02x\n", i, (unsigned)bitplane[i]);
       }
    }
 
@@ -208,6 +218,7 @@ namespace stile
       mem::aligned_vector<uint32_t, 16> picture_buf;
       picture_buf.reserve(width * height);
       m_buf.reserve(width * height);
+      m_bitbuf.reserve(width * height / 2);
 
       const uint32_t *data = imlib_image_get_data_for_reading_only();
       std::copy(data, data + width * height, picture_buf.begin());
@@ -221,7 +232,7 @@ namespace stile
          printf("Output Pixel %5u: 0x%04x\n", i, (unsigned)m_buf[i]);
       }
 
-      generate_palette(width, height);
+      generate_palette(&m_buf[0], width, height);
       convert_to_bitplane(&m_bitbuf[0], &m_buf[0], width, height);
    }
 }
