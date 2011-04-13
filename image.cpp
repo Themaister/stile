@@ -10,43 +10,6 @@
 
 namespace stile
 {
-#if 0
-   static void print_vector_u32(__m128i reg)
-   {
-      union
-      {
-         __m128i vec;
-         uint32_t elem[4];
-      } u;
-
-      u.vec = reg;
-
-      printf("Vector:\n");
-      for (unsigned i = 0; i < 4; i++)
-      {
-         printf("\tElem %u: 0x%08x\n", i, (unsigned)u.elem[i]);
-      }
-   }
-
-   static void print_vector_u16(__m128i reg)
-   {
-      union
-      {
-         __m128i vec;
-         uint16_t elem[4];
-      } u;
-
-      u.vec = reg;
-
-      printf("Vector:\n");
-      for (unsigned i = 0; i < 8; i++)
-      {
-         printf("\tElem %u: 0x%04x\n", i, (unsigned)u.elem[i]);
-      }
-   }
-#endif
-
-   // Is this even possible with SSE? :(
    void Image::generate_palette(const uint16_t *buf, unsigned width, unsigned height)
    {
       unsigned elems = width * height;
@@ -196,7 +159,7 @@ namespace stile
       }
    }
 
-   // Super trivial hash pulled out of my ass, but hey. It's not crypto after all ;)
+   // Super trivial hash pulled out of my ass, but hey. This is not crypto after all ;)
    void Image::generate_tilemap(const uint8_t *buf, unsigned tiles)
    {
       const uint8_t *orig_buf = buf;
@@ -252,7 +215,6 @@ namespace stile
       }
    }
 
-
    Image::Image(const char *path, unsigned palette_size)
    {
       std::fill(palette_array, palette_array + 16, 0);
@@ -267,11 +229,15 @@ namespace stile
 
       unsigned width = imlib_image_get_width();
       unsigned height = imlib_image_get_height();
+
+      tiles_x = width / 8;
+      tiles_y = height / 8;
+
       mem::aligned_vector<uint32_t, 16> picture_buf;
       picture_buf.reserve(width * height);
       m_buf.reserve(width * height);
       m_bitbuf.reserve(width * height / 2);
-      m_tilemap.reserve(width * height / (8 * 8));
+      m_tilemap.reserve(tiles_x * tiles_y);
 
       const uint32_t *data = imlib_image_get_data_for_reading_only();
       std::copy(data, data + width * height, picture_buf.begin());
@@ -282,14 +248,7 @@ namespace stile
       generate_palette(&m_buf[0], width, height);
       convert_to_bitplane(&m_bitbuf[0], &m_buf[0], width, height);
 
-      tiles_x = width / 8;
-      tiles_y = height / 8;
       generate_tilemap(&m_bitbuf[0], tiles_x * tiles_y);
-
-      puts("BG stats:");
-      printf("\tSize: %u x %u\n", width, height);
-      printf("\tDifferent tiles: %u\n", (unsigned)m_tiles.size() / 32);
-      printf("\tColors: %u\n", (unsigned)palette.size());
    }
 
    const uint16_t* Image::get_palette(size_t& size) const
